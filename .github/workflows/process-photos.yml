@@ -1,0 +1,43 @@
+name: Process New Photos
+
+on:
+  push:
+    paths:
+      - 'Photos/**'
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  process-photos:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        pip install pillow geopy anthropic
+
+    - name: Process new photos
+      env:
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      run: |
+        python process_new_photos.py
+
+    - name: Commit updated database
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add photo_archive.db
+        git diff --staged --quiet || git commit -m "Auto-process new photos: Update database"
+
+    - name: Push changes
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        branch: ${{ github.ref }}
