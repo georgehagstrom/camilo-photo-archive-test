@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+photo_archive_env/
+venv/
+env/
+ENV/
+
+# Streamlit secrets (these go in Streamlit Cloud dashboard)
+.streamlit/secrets.toml
+
+# Environment variables and API keys (local only)
+.env
+anthropic_key.csv
+../../anthropic_key.csv
+
+# Logs
+*.log
+visual_app.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.bak
+
+# Keep the demo photos and database for deployment
+# (Photos and DB are included in repo for demo)
