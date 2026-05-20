@@ -6,3 +6,4 @@ folium>=0.14.0
 streamlit-folium>=0.15.0
 httpx>=0.25.0
 pandas>=2.0.0
+PyGithub>=2.1.0

@@ -17,6 +17,7 @@ import json
 import httpx
 import pandas as pd
 import time
+from github import Github, GithubException
 
 st.set_page_config(
     page_title="Camilo Vergara Photo Archive",
@@ -862,44 +863,113 @@ else:
                     conn.close()
 
                     st.success("✓ Changes saved to database!")
-                    st.info("💡 Changes saved locally. To persist on Streamlit Cloud, download the database and commit to GitHub (see instructions below).")
+
+                    # Auto-commit to GitHub
+                    github_token = os.environ.get('GITHUB_TOKEN')
+
+                    if github_token:
+                        with st.spinner("📤 Committing to GitHub..."):
+                            try:
+                                # Initialize GitHub client
+                                g = Github(github_token)
+                                repo = g.get_repo("georgehagstrom/camilo-photo-archive-test")
+
+                                # Read current database file
+                                with open('photo_archive.db', 'rb') as f:
+                                    content = f.read()
+
+                                # Get current file from repo to get its SHA
+                                try:
+                                    file = repo.get_contents("photo_archive.db", ref="main")
+                                    sha = file.sha
+                                except:
+                                    sha = None  # File doesn't exist yet
+
+                                # Commit message
+                                commit_msg = f"Auto-update metadata: {photo['filename']} (photo ID {selected_id})"
+
+                                # Update file in GitHub
+                                if sha:
+                                    repo.update_file(
+                                        path="photo_archive.db",
+                                        message=commit_msg,
+                                        content=content,
+                                        sha=sha,
+                                        branch="main"
+                                    )
+                                else:
+                                    repo.create_file(
+                                        path="photo_archive.db",
+                                        message=commit_msg,
+                                        content=content,
+                                        branch="main"
+                                    )
+
+                                st.success("✓ Committed to GitHub! App will redeploy in ~30 seconds.")
+                                st.info("💡 The app will automatically restart with your changes.")
+
+                            except GithubException as e:
+                                st.warning(f"⚠️ Could not auto-commit to GitHub: {e.data.get('message', str(e))}")
+                                st.info("💡 Changes saved locally but not persisted. See instructions below to commit manually.")
+
+                            except Exception as e:
+                                st.warning(f"⚠️ Could not auto-commit: {e}")
+                                st.info("💡 Changes saved locally but not persisted. See instructions below to commit manually.")
+                    else:
+                        st.warning("⚠️ No GITHUB_TOKEN found - changes saved locally only")
+                        st.info("💡 Add GITHUB_TOKEN to secrets to enable auto-commit")
 
                     # Clear cache to reload data
                     st.cache_data.clear()
 
-                    time.sleep(1)
+                    time.sleep(2)
                     st.rerun()
 
                 except Exception as e:
                     st.error(f"❌ Error saving changes: {e}")
 
-        # Instructions for persisting changes
-        with st.expander("📝 How to persist changes on Streamlit Cloud"):
-            st.markdown("""
-            **On Streamlit Cloud, database changes are temporary.** To make them permanent:
+        # Instructions for setting up auto-commit
+        github_token = os.environ.get('GITHUB_TOKEN')
+        if not github_token:
+            with st.expander("⚙️ Setup: Enable Auto-Commit to GitHub"):
+                st.markdown("""
+                **To enable automatic persistence of changes:**
 
-            1. **Download updated database:**
-               - The database has been updated locally
-               - You'll need to replace it in your GitHub repo
+                1. **Create a GitHub Personal Access Token:**
+                   - Go to: https://github.com/settings/tokens
+                   - Click "Generate new token (classic)"
+                   - Give it a name: "Camilo Archive App"
+                   - Select scopes: **`repo`** (full control of private repositories)
+                   - Click "Generate token"
+                   - **Copy the token** (you won't see it again!)
 
-            2. **From your local machine:**
-               ```bash
-               # Download the database file from Streamlit Cloud (manual step)
-               # Or edit locally and commit
+                2. **Add token to Streamlit Secrets:**
+                   - Go to your app settings: https://share.streamlit.io/
+                   - Click on your app → Settings (⚙️) → Secrets
+                   - Add this line:
+                   ```toml
+                   GITHUB_TOKEN = "ghp_your_token_here"
+                   ```
+                   - Click "Save"
 
-               cd /home/georgehagstrom/work/CamiloPhotos
-               git add photo_archive.db
-               git commit -m "Update photo metadata: [description]"
-               git push
-               ```
+                3. **That's it!** Changes will auto-commit to GitHub.
 
-            3. **Alternative:** For production use with frequent edits, consider:
-               - Using a cloud database (PostgreSQL on Railway/Heroku)
-               - Auto-commit to GitHub via API
-               - See DEPLOYMENT.md for cloud database setup
+                **Security Note:** The token has write access to your repo. Keep it secret!
+                """)
+        else:
+            with st.expander("✅ Auto-Commit Enabled"):
+                st.markdown("""
+                **Auto-commit to GitHub is enabled!**
 
-            For now, with 6 demo photos, manual commits work fine!
-            """)
+                When you save changes:
+                1. ✓ Database updates locally
+                2. ✓ Commits to GitHub automatically
+                3. ✓ Streamlit Cloud redeploys (~30 seconds)
+                4. ✓ Changes persist permanently
+
+                Changes are tracked in git history:
+                https://github.com/georgehagstrom/camilo-photo-archive-test/commits/main
+                """)
 
     # Logout button
     if st.button("🚪 Logout Admin"):
