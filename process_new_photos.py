@@ -202,8 +202,8 @@ def insert_photo(conn, photo_data):
         INSERT INTO photos (
             filename, file_path, width, height, camera_make, camera_model,
             date_taken, original_caption, caption_year, caption_city,
-            caption_location, caption_street_address, latitude, longitude
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            caption_location, caption_street_address, latitude, longitude, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         photo_data['filename'],
         photo_data['file_path'],
@@ -218,7 +218,8 @@ def insert_photo(conn, photo_data):
         photo_data['caption_location'],
         photo_data['caption_street_address'],
         photo_data['latitude'],
-        photo_data['longitude']
+        photo_data['longitude'],
+        None  # notes field starts empty
     ))
 
     conn.commit()

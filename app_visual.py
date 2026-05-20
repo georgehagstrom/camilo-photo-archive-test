@@ -16,6 +16,7 @@ import subprocess
 import json
 import httpx
 import pandas as pd
+import time
 
 st.set_page_config(
     page_title="Camilo Vergara Photo Archive",
@@ -752,3 +753,155 @@ The photos table has: id, filename, file_path, original_caption, latitude, longi
             if st.button(q, key=f"example_{q[:20]}"):
                 st.session_state.chat_messages.append({"role": "user", "content": q})
                 st.rerun()
+
+# Admin Section - Edit Photo Metadata
+st.markdown("---")
+st.subheader("🔧 Admin: Edit Photo Metadata")
+
+# Admin password check
+if 'admin_authenticated' not in st.session_state:
+    st.session_state.admin_authenticated = False
+
+if not st.session_state.admin_authenticated:
+    admin_password = st.text_input("Admin Password", type="password", key="admin_password")
+
+    if st.button("Access Admin Panel", type="primary"):
+        # Use same APP_PASSWORD or a separate ADMIN_PASSWORD
+        correct_password = os.environ.get('ADMIN_PASSWORD', os.environ.get('APP_PASSWORD', 'admin'))
+        if admin_password == correct_password:
+            st.session_state.admin_authenticated = True
+            st.rerun()
+        else:
+            st.error("❌ Incorrect admin password")
+else:
+    st.success("✓ Admin access granted")
+
+    # Select photo to edit
+    photo_options = {f"{p['id']}: {p['filename']} ({p['caption_year']})": p['id'] for p in photos}
+    selected_display = st.selectbox("Select photo to edit:", options=list(photo_options.keys()))
+    selected_id = photo_options[selected_display]
+
+    # Get photo data
+    photo = next((p for p in photos if p['id'] == selected_id), None)
+
+    if photo:
+        st.markdown(f"### Editing: {photo['filename']}")
+
+        # Show current photo
+        col1, col2 = st.columns([1, 2])
+
+        with col1:
+            if Path(photo['file_path']).exists():
+                st.image(photo['file_path'], use_container_width=True)
+
+        with col2:
+            st.markdown("**Current Caption:**")
+            st.info(photo['original_caption'] or "No caption")
+
+        # Edit form
+        with st.form(key=f"edit_form_{selected_id}"):
+            st.markdown("#### Edit Metadata")
+
+            # Editable fields
+            new_year = st.number_input("Year", value=photo['caption_year'] if photo['caption_year'] else 1900, min_value=1900, max_value=2100)
+            new_city = st.text_input("City", value=photo['caption_city'] or "")
+            new_location = st.text_input("Location/Intersection", value=photo['caption_location'] or "")
+            new_address = st.text_input("Street Address", value=photo.get('caption_street_address') or "")
+
+            col_lat, col_lon = st.columns(2)
+            with col_lat:
+                new_lat = st.number_input("Latitude", value=float(photo['latitude']) if photo['latitude'] else 0.0, format="%.6f")
+            with col_lon:
+                new_lon = st.number_input("Longitude", value=float(photo['longitude']) if photo['longitude'] else 0.0, format="%.6f")
+
+            # Notes field
+            st.markdown("#### Research Notes")
+            conn = sqlite3.connect('photo_archive.db')
+            cursor = conn.cursor()
+            cursor.execute("SELECT notes FROM photos WHERE id = ?", (selected_id,))
+            current_notes = cursor.fetchone()
+            conn.close()
+
+            notes_value = current_notes[0] if current_notes and current_notes[0] else ""
+            new_notes = st.text_area("Notes", value=notes_value, height=150,
+                                     help="Add research notes, historical context, corrections, etc.")
+
+            # Submit button
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                submitted = st.form_submit_button("💾 Save Changes", type="primary")
+
+            if submitted:
+                # Update database
+                try:
+                    conn = sqlite3.connect('photo_archive.db')
+                    cursor = conn.cursor()
+
+                    cursor.execute("""
+                        UPDATE photos
+                        SET caption_year = ?,
+                            caption_city = ?,
+                            caption_location = ?,
+                            caption_street_address = ?,
+                            latitude = ?,
+                            longitude = ?,
+                            notes = ?
+                        WHERE id = ?
+                    """, (
+                        new_year if new_year != 1900 else None,
+                        new_city if new_city else None,
+                        new_location if new_location else None,
+                        new_address if new_address else None,
+                        new_lat if new_lat != 0.0 else None,
+                        new_lon if new_lon != 0.0 else None,
+                        new_notes if new_notes else None,
+                        selected_id
+                    ))
+
+                    conn.commit()
+                    conn.close()
+
+                    st.success("✓ Changes saved to database!")
+                    st.info("💡 Changes saved locally. To persist on Streamlit Cloud, download the database and commit to GitHub (see instructions below).")
+
+                    # Clear cache to reload data
+                    st.cache_data.clear()
+
+                    time.sleep(1)
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"❌ Error saving changes: {e}")
+
+        # Instructions for persisting changes
+        with st.expander("📝 How to persist changes on Streamlit Cloud"):
+            st.markdown("""
+            **On Streamlit Cloud, database changes are temporary.** To make them permanent:
+
+            1. **Download updated database:**
+               - The database has been updated locally
+               - You'll need to replace it in your GitHub repo
+
+            2. **From your local machine:**
+               ```bash
+               # Download the database file from Streamlit Cloud (manual step)
+               # Or edit locally and commit
+
+               cd /home/georgehagstrom/work/CamiloPhotos
+               git add photo_archive.db
+               git commit -m "Update photo metadata: [description]"
+               git push
+               ```
+
+            3. **Alternative:** For production use with frequent edits, consider:
+               - Using a cloud database (PostgreSQL on Railway/Heroku)
+               - Auto-commit to GitHub via API
+               - See DEPLOYMENT.md for cloud database setup
+
+            For now, with 6 demo photos, manual commits work fine!
+            """)
+
+    # Logout button
+    if st.button("🚪 Logout Admin"):
+        st.session_state.admin_authenticated = False
+        st.rerun()
