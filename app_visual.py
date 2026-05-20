@@ -395,6 +395,88 @@ def execute_python_code(code):
     except Exception as e:
         return {"error": str(e)}
 
+def analyze_image_vision(photo_id, question=None):
+    """Use Claude Vision to analyze a photo from the archive"""
+    try:
+        # Get photo info from database
+        conn = sqlite3.connect('photo_archive.db')
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT filename, file_path, original_caption, caption_year, caption_location
+            FROM photos WHERE id = ?
+        """, (photo_id,))
+
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result:
+            return {"error": f"Photo ID {photo_id} not found"}
+
+        filename, file_path, caption, year, location = result
+
+        # Convert absolute path to relative
+        relative_path = f"Photos/{Path(file_path).name}"
+
+        # Check if file exists
+        if not Path(relative_path).exists():
+            return {"error": f"Image file not found: {relative_path}"}
+
+        # Read and encode image
+        with open(relative_path, "rb") as f:
+            image_data = base64.standard_b64encode(f.read()).decode("utf-8")
+
+        # Determine image type
+        ext = Path(relative_path).suffix.lower()
+        media_type = "image/jpeg" if ext in ['.jpg', '.jpeg'] else "image/png"
+
+        # Get API key
+        api_key = os.environ.get('ANTHROPIC_API_KEY')
+        if not api_key:
+            return {"error": "No API key available"}
+
+        # Build prompt
+        if question:
+            prompt = f"This photo is from Camilo Vergara's archive: {filename} ({year}), {location}. Caption: {caption}\n\nQuestion: {question}"
+        else:
+            prompt = f"Analyze this photo from Camilo Vergara's documentary archive: {filename} ({year}), {location}. Caption: {caption}\n\nDescribe what you see in detail, including: buildings, architecture, signs, text visible, condition of structures, people, vehicles, and any evidence of urban decline or change."
+
+        # Call Claude Vision
+        client = anthropic.Anthropic(api_key=api_key)
+
+        response = client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=2048,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_data,
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt
+                    }
+                ],
+            }],
+        )
+
+        analysis = response.content[0].text
+
+        return {
+            "success": True,
+            "photo_id": photo_id,
+            "filename": filename,
+            "analysis": analysis
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
 # MCP Tool Definitions
 TOOLS = [
     {
@@ -409,6 +491,24 @@ TOOLS = [
                 }
             },
             "required": ["query"]
+        }
+    },
+    {
+        "name": "analyze_image",
+        "description": "Use Claude's vision capabilities to analyze a photo from the archive. Can describe visual content, read text/signs, assess building conditions, identify architectural features, and answer specific questions about what's visible in the image. Use this when you need to 'see' what's actually in a photo beyond the metadata.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "photo_id": {
+                    "type": "integer",
+                    "description": "The ID of the photo to analyze (from the photos table)"
+                },
+                "question": {
+                    "type": "string",
+                    "description": "Optional: A specific question to answer about the image. If omitted, provides a general detailed description."
+                }
+            },
+            "required": ["photo_id"]
         }
     },
     {
@@ -445,6 +545,8 @@ def process_tool_call(tool_name, tool_input):
     """Process a tool call and return results"""
     if tool_name == "query_database":
         return execute_sql_query(tool_input["query"])
+    elif tool_name == "analyze_image":
+        return analyze_image_vision(tool_input["photo_id"], tool_input.get("question"))
     elif tool_name == "fetch_url":
         return fetch_web_content(tool_input["url"])
     elif tool_name == "run_python":
@@ -496,7 +598,8 @@ else:
 Archive contains {len(photos)} photos from {min(years)} to {max(years)} across {len(location_groups)} locations in Camden, NJ.
 
 You have access to tools:
-- query_database: Run SQL queries on the photo database
+- query_database: Run SQL queries on the photo database to find photos
+- analyze_image: Use vision AI to actually SEE and analyze the content of photos (read signs, describe buildings, assess conditions, identify visual details)
 - fetch_url: Fetch web content for research (extracts text from HTML, handles large pages)
 - run_python: Execute Python code for analysis
 
@@ -634,15 +737,15 @@ The photos table has: id, filename, file_path, original_caption, latitude, longi
                     """)
 
     # Example questions
-    with st.expander("💡 Example questions (now with MCP tools!)"):
+    with st.expander("💡 Example questions (with vision AI!)"):
         example_questions = [
-            "Run a SQL query to find all photos from the 1970s",
-            "What years are documented in this archive?",
+            "Analyze photo 7 - what do you see in the image?",
+            "What text is visible on the buildings in the photos from 810 Broadway?",
+            "Compare the visual condition of buildings across different years",
             "Search the web for historical context about Camden NJ in 1979",
-            "Calculate the average year of photos by location",
-            "Tell me about the Broadway location",
-            "Find all photos that mention 'Broadway' in the caption",
-            "Use Python to analyze the distribution of photos by decade"
+            "Find all photos from the 1970s and describe what they show",
+            "What architectural features are visible in photo 5?",
+            "Analyze the graffiti and murals visible in the archive photos"
         ]
 
         for q in example_questions:
