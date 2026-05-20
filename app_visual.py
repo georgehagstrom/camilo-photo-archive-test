@@ -108,7 +108,12 @@ def load_photos():
 
     photos = []
     for row in cursor.fetchall():
-        photos.append(dict(zip(columns, row)))
+        photo_dict = dict(zip(columns, row))
+        # Fix file paths - convert absolute paths to relative
+        # Extract just the filename and construct relative path
+        filename = Path(photo_dict['file_path']).name
+        photo_dict['file_path'] = f"Photos/{filename}"
+        photos.append(photo_dict)
 
     conn.close()
     return photos
