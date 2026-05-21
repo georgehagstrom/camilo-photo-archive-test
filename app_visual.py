@@ -146,27 +146,44 @@ def get_chats_for_photo(photo_id):
     conn.close()
     return chats
 
-def check_vision_cache(photo_id):
-    """Check if we have cached vision analysis for a photo"""
+def check_vision_cache(photo_id, question=None):
+    """Check if we have cached vision analysis for a photo and question"""
+    import hashlib
+
     conn = sqlite3.connect('photo_archive.db')
     cursor = conn.cursor()
+
+    # Normalize question for matching
+    question = (question or "general").lower().strip()
+    question_hash = hashlib.md5(question.encode()).hexdigest()[:16]
+
     cursor.execute("""
         SELECT analysis, timestamp
         FROM vision_cache
-        WHERE photo_id = ?
-    """, (photo_id,))
+        WHERE photo_id = ? AND question_hash = ?
+    """, (photo_id, question_hash))
     result = cursor.fetchone()
     conn.close()
     return result
 
 def save_vision_cache(photo_id, question, analysis):
-    """Save vision analysis to cache"""
+    """Save vision analysis to cache (preserves existing analyses)"""
+    import hashlib
+
     conn = sqlite3.connect('photo_archive.db')
     cursor = conn.cursor()
+
+    # Normalize question
+    question = (question or "general").lower().strip()
+    question_hash = hashlib.md5(question.encode()).hexdigest()[:16]
+
+    # Use INSERT OR REPLACE to update if same question asked again
+    # But different questions create new rows (preserving all Q&As)
     cursor.execute("""
-        INSERT OR REPLACE INTO vision_cache (photo_id, last_question, analysis, timestamp)
-        VALUES (?, ?, ?, ?)
-    """, (photo_id, question, analysis, datetime.now()))
+        INSERT OR REPLACE INTO vision_cache
+        (photo_id, question, question_hash, analysis, timestamp)
+        VALUES (?, ?, ?, ?, ?)
+    """, (photo_id, question, question_hash, analysis, datetime.now()))
     conn.commit()
     conn.close()
 
@@ -777,7 +794,7 @@ def analyze_image_vision(photo_id, question=None):
 TOOLS = [
     {
         "name": "query_database",
-        "description": "Execute SQL queries on the photo archive database. Tables available: (1) photos: id, filename, file_path, original_caption, latitude, longitude, caption_year, caption_city, caption_location, caption_intersection, caption_street_address, notes (research annotations). (2) vision_cache: photo_id, last_question, analysis (previous AI visual analysis), timestamp. IMPORTANT: Check vision_cache FIRST when you need visual information about photos - it contains cached AI analyses. Use JOINs to get photo metadata with cached analyses: SELECT p.*, v.analysis FROM photos p LEFT JOIN vision_cache v ON p.id=v.photo_id",
+        "description": "Execute SQL queries on the photo archive database. Tables available: (1) photos: id, filename, file_path, original_caption, latitude, longitude, caption_year, caption_city, caption_location, caption_intersection, caption_street_address, notes (research annotations). (2) vision_cache: id, photo_id, question, question_hash, analysis, timestamp. Multiple analyses per photo are preserved! IMPORTANT: Check vision_cache FIRST when you need visual information about photos. Use JOINs: SELECT p.*, v.question, v.analysis FROM photos p LEFT JOIN vision_cache v ON p.id=v.photo_id. You can see ALL analyses for a photo, or filter by question.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -860,13 +877,13 @@ def process_tool_call(tool_name, tool_input):
         if photo_id not in st.session_state.tracked_photo_ids:
             st.session_state.tracked_photo_ids.append(photo_id)
 
-        # Check cache first
-        cached = check_vision_cache(photo_id)
-        if cached and not question:
-            # Use cached analysis if no specific question
+        # Check cache first for this specific question
+        cached = check_vision_cache(photo_id, question)
+        if cached:
+            # Use cached analysis if we've answered this question before
             return {"cached": True, "analysis": cached[0], "timestamp": cached[1]}
 
-        # Get fresh analysis
+        # Get fresh analysis (not in cache)
         result = analyze_image_vision(photo_id, question)
 
         # Cache the result
@@ -961,14 +978,15 @@ Archive contains {len(photos)} photos from {min(years)} to {max(years)} across {
 {current_context}
 DATABASE SCHEMA:
 - photos table: id, filename, file_path, original_caption, latitude, longitude, caption_year, caption_city, caption_location, caption_intersection, caption_street_address, notes (research annotations)
-- vision_cache table: photo_id, last_question, analysis (cached AI visual analysis), timestamp
+- vision_cache table: id, photo_id, question, question_hash, analysis, timestamp (MULTIPLE analyses per photo preserved!)
 
 IMPORTANT - CHECK EXISTING DATA FIRST:
 1. ALWAYS query the photos table for 'notes' field - contains research annotations about photos
 2. ALWAYS query the vision_cache table to see if photos have already been visually analyzed
-3. The vision_cache contains previous AI analyses - check it before requesting new analyze_image calls
-4. If vision_cache has analysis for a photo, use that information instead of re-analyzing
-5. Only use analyze_image for NEW visual analysis or specific questions not answered by cache
+3. The vision_cache preserves ALL previous analyses - a photo can have multiple entries for different questions
+4. Check vision_cache before requesting new analyze_image calls - you might already have the answer
+5. Use: SELECT * FROM vision_cache WHERE photo_id = X to see all analyses for a photo
+6. Only use analyze_image for questions not yet answered in the cache
 
 You have access to tools:
 - query_database: Query photos table (metadata, notes) AND vision_cache table (previous analyses). Use JOINs to get both photo info and cached analyses together.
