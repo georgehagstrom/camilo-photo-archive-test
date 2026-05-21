@@ -19,6 +19,62 @@ import pandas as pd
 import time
 from datetime import datetime
 from github import Github, GithubException
+import hashlib
+
+# ===== DATABASE MIGRATION =====
+
+def ensure_vision_cache_schema():
+    """Ensure vision_cache has the correct schema (auto-migrate if needed)"""
+    conn = sqlite3.connect('photo_archive.db')
+    cursor = conn.cursor()
+
+    # Check if question_hash column exists
+    cursor.execute("PRAGMA table_info(vision_cache)")
+    columns = [row[1] for row in cursor.fetchall()]
+
+    if 'question_hash' not in columns:
+        print("⚠️  Old vision_cache schema detected - migrating...")
+
+        # Backup existing data
+        cursor.execute("SELECT photo_id, last_question, analysis, timestamp FROM vision_cache")
+        existing_data = cursor.fetchall()
+
+        # Drop and recreate with new schema
+        cursor.execute("DROP TABLE IF EXISTS vision_cache")
+        cursor.execute("""
+            CREATE TABLE vision_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                photo_id INTEGER NOT NULL,
+                question TEXT NOT NULL,
+                question_hash TEXT NOT NULL,
+                analysis TEXT NOT NULL,
+                timestamp TIMESTAMP NOT NULL,
+                FOREIGN KEY (photo_id) REFERENCES photos(id) ON DELETE CASCADE,
+                UNIQUE(photo_id, question_hash)
+            )
+        """)
+
+        # Create indexes
+        cursor.execute("CREATE INDEX idx_vision_cache_photo ON vision_cache(photo_id)")
+        cursor.execute("CREATE INDEX idx_vision_cache_hash ON vision_cache(photo_id, question_hash)")
+
+        # Restore data with question hashes
+        for photo_id, question, analysis, timestamp in existing_data:
+            question = question or "general"
+            question_hash = hashlib.md5(question.lower().strip().encode()).hexdigest()[:16]
+            cursor.execute("""
+                INSERT OR IGNORE INTO vision_cache
+                (photo_id, question, question_hash, analysis, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+            """, (photo_id, question, question_hash, analysis, timestamp))
+
+        conn.commit()
+        print(f"✓ Migration complete - restored {len(existing_data)} analyses")
+
+    conn.close()
+
+# Run migration on app startup
+ensure_vision_cache_schema()
 
 # ===== CHAT SESSION MANAGEMENT =====
 
@@ -148,8 +204,6 @@ def get_chats_for_photo(photo_id):
 
 def check_vision_cache(photo_id, question=None):
     """Check if we have cached vision analysis for a photo and question"""
-    import hashlib
-
     conn = sqlite3.connect('photo_archive.db')
     cursor = conn.cursor()
 
@@ -168,8 +222,6 @@ def check_vision_cache(photo_id, question=None):
 
 def save_vision_cache(photo_id, question, analysis):
     """Save vision analysis to cache (preserves existing analyses)"""
-    import hashlib
-
     conn = sqlite3.connect('photo_archive.db')
     cursor = conn.cursor()
 
