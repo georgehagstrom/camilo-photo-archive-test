@@ -77,6 +77,10 @@ def save_chat_session(title, messages, photo_ids):
     conn.commit()
     conn.close()
 
+    # Auto-commit to GitHub
+    commit_msg = f"Auto-save chat: {title[:40]}"
+    auto_commit_database(commit_msg)
+
     return session_id
 
 def load_chat_session(session_id):
@@ -165,6 +169,52 @@ def save_vision_cache(photo_id, question, analysis):
     """, (photo_id, question, analysis, datetime.now()))
     conn.commit()
     conn.close()
+
+def auto_commit_database(commit_message):
+    """Auto-commit database to GitHub"""
+    github_token = os.environ.get('GITHUB_TOKEN')
+
+    if not github_token:
+        return False
+
+    try:
+        # Initialize GitHub client
+        g = Github(github_token)
+        repo = g.get_repo("georgehagstrom/camilo-photo-archive-test")
+
+        # Read current database file
+        with open('photo_archive.db', 'rb') as f:
+            content = f.read()
+
+        # Get current file from repo to get its SHA
+        try:
+            file = repo.get_contents("photo_archive.db", ref="main")
+            sha = file.sha
+        except:
+            sha = None
+
+        # Update file in GitHub
+        if sha:
+            repo.update_file(
+                path="photo_archive.db",
+                message=commit_message,
+                content=content,
+                sha=sha,
+                branch="main"
+            )
+        else:
+            repo.create_file(
+                path="photo_archive.db",
+                message=commit_message,
+                content=content,
+                branch="main"
+            )
+
+        return True
+
+    except Exception as e:
+        print(f"Warning: Failed to auto-commit to GitHub: {e}")
+        return False
 
 # ===== END CHAT SESSION MANAGEMENT =====
 
@@ -823,6 +873,11 @@ def process_tool_call(tool_name, tool_input):
         if isinstance(result, dict) and 'analysis' in result:
             try:
                 save_vision_cache(photo_id, question or "general", result['analysis'])
+
+                # Auto-commit vision cache to GitHub
+                commit_msg = f"Auto-cache vision analysis: photo {photo_id}"
+                auto_commit_database(commit_msg)
+
             except Exception as e:
                 # Log error but don't fail the request
                 print(f"Warning: Failed to cache vision analysis for photo {photo_id}: {e}")
