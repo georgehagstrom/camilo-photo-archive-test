@@ -99,14 +99,14 @@ def load_photos():
     cursor.execute("""
         SELECT p.id, p.filename, p.file_path, p.original_caption,
                p.latitude, p.longitude, p.caption_year, p.caption_city,
-               p.caption_location
+               p.caption_location, p.notes
         FROM photos p
         WHERE p.latitude IS NOT NULL AND p.longitude IS NOT NULL
         ORDER BY p.caption_year, p.filename
     """)
 
     columns = ['id', 'filename', 'file_path', 'original_caption', 'latitude',
-               'longitude', 'caption_year', 'caption_city', 'caption_location']
+               'longitude', 'caption_year', 'caption_city', 'caption_location', 'notes']
 
     photos = []
     for row in cursor.fetchall():
@@ -256,6 +256,12 @@ if selected_photo:
 
         st.markdown("**Caption:**")
         st.markdown(f"*{selected_photo['original_caption']}*")
+
+        # Display research notes if they exist
+        if selected_photo.get('notes'):
+            st.markdown("---")
+            st.markdown("**📝 Research Notes:**")
+            st.markdown(selected_photo['notes'])
 
         st.markdown("---")
 
