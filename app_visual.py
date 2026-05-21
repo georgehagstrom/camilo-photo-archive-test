@@ -405,11 +405,56 @@ if 'selected_location' not in st.session_state:
 # Load photos
 photos = load_photos()
 
-# Group by location
-location_groups = defaultdict(list)
-for photo in photos:
-    loc_key = f"{photo['latitude']:.6f},{photo['longitude']:.6f}"
-    location_groups[loc_key].append(photo)
+# Fuzzy location clustering - group photos within ~15 feet of each other
+def cluster_photos_by_location(photos, threshold_degrees=0.000045):
+    """
+    Cluster photos by geographic proximity.
+
+    threshold_degrees: ~15 feet at Camden, NJ latitude
+        - 0.000045 degrees ≈ 15 feet
+        - 0.00003 degrees ≈ 10 feet
+        - 0.00006 degrees ≈ 20 feet
+    """
+    clusters = []
+
+    for photo in photos:
+        lat, lon = photo['latitude'], photo['longitude']
+
+        # Find if photo belongs to existing cluster
+        added = False
+        for cluster in clusters:
+            # Use cluster centroid for comparison
+            cluster_lat = sum(p['latitude'] for p in cluster) / len(cluster)
+            cluster_lon = sum(p['longitude'] for p in cluster) / len(cluster)
+
+            # Simple Euclidean distance in degrees (good enough for small distances)
+            distance = ((lat - cluster_lat)**2 + (lon - cluster_lon)**2)**0.5
+
+            if distance <= threshold_degrees:
+                cluster.append(photo)
+                added = True
+                break
+
+        # Create new cluster if not added to existing
+        if not added:
+            clusters.append([photo])
+
+    # Convert to location_groups format with centroid as key
+    location_groups = {}
+    for cluster in clusters:
+        # Use cluster centroid as location key
+        avg_lat = sum(p['latitude'] for p in cluster) / len(cluster)
+        avg_lon = sum(p['longitude'] for p in cluster) / len(cluster)
+        loc_key = f"{avg_lat:.6f},{avg_lon:.6f}"
+        location_groups[loc_key] = cluster
+
+    return location_groups
+
+# Adjust threshold to change clustering sensitivity:
+#   0.00003 = ~10 feet (stricter)
+#   0.000045 = ~15 feet (default)
+#   0.00006 = ~20 feet (looser)
+location_groups = cluster_photos_by_location(photos, threshold_degrees=0.000045)
 
 # Header
 st.title("📷 Camilo Vergara Photo Archive")
