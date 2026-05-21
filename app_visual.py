@@ -17,7 +17,156 @@ import json
 import httpx
 import pandas as pd
 import time
+from datetime import datetime
 from github import Github, GithubException
+
+# ===== CHAT SESSION MANAGEMENT =====
+
+def get_all_chat_sessions():
+    """Get all saved chat sessions"""
+    conn = sqlite3.connect('photo_archive.db')
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT cs.id, cs.title, cs.created_at, cs.updated_at,
+               COUNT(DISTINCT csp.photo_id) as photo_count
+        FROM chat_sessions cs
+        LEFT JOIN chat_session_photos csp ON cs.id = csp.session_id
+        GROUP BY cs.id
+        ORDER BY cs.updated_at DESC
+    """)
+    sessions = cursor.fetchall()
+    conn.close()
+    return sessions
+
+def save_chat_session(title, messages, photo_ids):
+    """Save current chat session to database"""
+    conn = sqlite3.connect('photo_archive.db')
+    cursor = conn.cursor()
+
+    now = datetime.now()
+
+    # Create session
+    cursor.execute("""
+        INSERT INTO chat_sessions (title, created_at, updated_at)
+        VALUES (?, ?, ?)
+    """, (title, now, now))
+
+    session_id = cursor.lastrowid
+
+    # Save messages
+    for msg in messages:
+        # Try to extract photo_id from message if it mentions analyze_image
+        photo_id = None
+        if msg['role'] == 'assistant' and 'photo' in msg.get('content', '').lower():
+            # This is a simple heuristic - will be improved by tracking during tool use
+            pass
+
+        cursor.execute("""
+            INSERT INTO chat_messages (session_id, role, content, photo_id, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        """, (session_id, msg['role'], msg['content'], photo_id, now))
+
+    # Link photos to session
+    for photo_id in set(photo_ids):
+        if photo_id:
+            cursor.execute("""
+                INSERT OR IGNORE INTO chat_session_photos (session_id, photo_id)
+                VALUES (?, ?)
+            """, (session_id, photo_id))
+
+    conn.commit()
+    conn.close()
+
+    return session_id
+
+def load_chat_session(session_id):
+    """Load a saved chat session"""
+    conn = sqlite3.connect('photo_archive.db')
+    cursor = conn.cursor()
+
+    # Get messages
+    cursor.execute("""
+        SELECT role, content, photo_id, timestamp
+        FROM chat_messages
+        WHERE session_id = ?
+        ORDER BY timestamp ASC
+    """, (session_id,))
+
+    messages = []
+    photo_ids = []
+    for row in cursor.fetchall():
+        messages.append({
+            'role': row[0],
+            'content': row[1]
+        })
+        if row[2]:
+            photo_ids.append(row[2])
+
+    # Get session info
+    cursor.execute("""
+        SELECT title, created_at
+        FROM chat_sessions
+        WHERE id = ?
+    """, (session_id,))
+
+    session_info = cursor.fetchone()
+    conn.close()
+
+    return {
+        'messages': messages,
+        'photo_ids': photo_ids,
+        'title': session_info[0] if session_info else "Untitled",
+        'created_at': session_info[1] if session_info else None
+    }
+
+def delete_chat_session(session_id):
+    """Delete a chat session"""
+    conn = sqlite3.connect('photo_archive.db')
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+def get_chats_for_photo(photo_id):
+    """Get all chat sessions that discussed a specific photo"""
+    conn = sqlite3.connect('photo_archive.db')
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT cs.id, cs.title, cs.updated_at
+        FROM chat_sessions cs
+        JOIN chat_session_photos csp ON cs.id = csp.session_id
+        WHERE csp.photo_id = ?
+        ORDER BY cs.updated_at DESC
+    """, (photo_id,))
+    chats = cursor.fetchall()
+    conn.close()
+    return chats
+
+def check_vision_cache(photo_id):
+    """Check if we have cached vision analysis for a photo"""
+    conn = sqlite3.connect('photo_archive.db')
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT analysis, timestamp
+        FROM vision_cache
+        WHERE photo_id = ?
+    """, (photo_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result
+
+def save_vision_cache(photo_id, question, analysis):
+    """Save vision analysis to cache"""
+    conn = sqlite3.connect('photo_archive.db')
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO vision_cache (photo_id, last_question, analysis, timestamp)
+        VALUES (?, ?, ?, ?)
+    """, (photo_id, question, analysis, datetime.now()))
+    conn.commit()
+    conn.close()
+
+# ===== END CHAT SESSION MANAGEMENT =====
 
 st.set_page_config(
     page_title="Camilo Vergara Photo Archive",
@@ -273,6 +422,15 @@ if selected_photo:
         # Google Street View
         street_view_url = f"https://www.google.com/maps/@{selected_photo['latitude']},{selected_photo['longitude']},3a,75y,90t/data=!3m4!1e1!3m2!1s0!2e0"
         st.markdown(f"[📍 Google Street View]({street_view_url})")
+
+        # Show related chat sessions
+        related_chats = get_chats_for_photo(selected_photo['id'])
+        if related_chats:
+            st.markdown("---")
+            st.markdown("**💬 Previous Discussions:**")
+            for chat_id, chat_title, updated_at in related_chats:
+                st.markdown(f"- [{chat_title}](#) (Last updated: {updated_at[:16]})")
+                st.caption(f"Chat ID: {chat_id}")
 
 else:
     # No photo selected yet
@@ -552,9 +710,40 @@ TOOLS = [
 def process_tool_call(tool_name, tool_input):
     """Process a tool call and return results"""
     if tool_name == "query_database":
-        return execute_sql_query(tool_input["query"])
+        result = execute_sql_query(tool_input["query"])
+        # Track photo IDs from query results
+        if isinstance(result, dict) and 'rows' in result:
+            for row in result['rows']:
+                if isinstance(row, (list, tuple)) and len(row) > 0:
+                    # Check if first column looks like a photo ID
+                    if isinstance(row[0], int) and row[0] > 0 and row[0] < 10000:
+                        if row[0] not in st.session_state.tracked_photo_ids:
+                            st.session_state.tracked_photo_ids.append(row[0])
+        return result
+
     elif tool_name == "analyze_image":
-        return analyze_image_vision(tool_input["photo_id"], tool_input.get("question"))
+        photo_id = tool_input["photo_id"]
+        question = tool_input.get("question")
+
+        # Track this photo
+        if photo_id not in st.session_state.tracked_photo_ids:
+            st.session_state.tracked_photo_ids.append(photo_id)
+
+        # Check cache first
+        cached = check_vision_cache(photo_id)
+        if cached and not question:
+            # Use cached analysis if no specific question
+            return {"cached": True, "analysis": cached[0], "timestamp": cached[1]}
+
+        # Get fresh analysis
+        result = analyze_image_vision(photo_id, question)
+
+        # Cache the result
+        if isinstance(result, dict) and 'analysis' in result:
+            save_vision_cache(photo_id, question or "general", result['analysis'])
+
+        return result
+
     elif tool_name == "fetch_url":
         return fetch_web_content(tool_input["url"])
     elif tool_name == "run_python":
@@ -587,6 +776,14 @@ else:
     # Initialize chat history
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
+
+    # Initialize chat session tracking
+    if "current_session_id" not in st.session_state:
+        st.session_state.current_session_id = None
+    if "tracked_photo_ids" not in st.session_state:
+        st.session_state.tracked_photo_ids = []
+    if "session_title" not in st.session_state:
+        st.session_state.session_title = None
 
     # Display chat messages
     for message in st.session_state.chat_messages:
@@ -760,6 +957,73 @@ The photos table has: id, filename, file_path, original_caption, latitude, longi
             if st.button(q, key=f"example_{q[:20]}"):
                 st.session_state.chat_messages.append({"role": "user", "content": q})
                 st.rerun()
+
+    # Save/Load Chat Session
+    st.markdown("---")
+    st.markdown("### 💾 Save & Load Chats")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Save Current Chat**")
+        if len(st.session_state.chat_messages) > 0:
+            save_title = st.text_input(
+                "Chat Title:",
+                value=st.session_state.session_title or f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                key="save_title_input"
+            )
+
+            photo_count = len(st.session_state.tracked_photo_ids)
+            st.caption(f"📸 {photo_count} photos discussed")
+
+            if st.button("💾 Save This Chat", type="primary"):
+                session_id = save_chat_session(
+                    save_title,
+                    st.session_state.chat_messages,
+                    st.session_state.tracked_photo_ids
+                )
+                st.session_state.current_session_id = session_id
+                st.session_state.session_title = save_title
+                st.success(f"✓ Chat saved! (ID: {session_id})")
+                st.rerun()
+        else:
+            st.info("Start a conversation to save it")
+
+    with col2:
+        st.markdown("**Load Saved Chat**")
+        saved_sessions = get_all_chat_sessions()
+
+        if saved_sessions:
+            for session_id, title, created_at, updated_at, photo_count in saved_sessions:
+                col_a, col_b = st.columns([3, 1])
+                with col_a:
+                    if st.button(f"📁 {title}", key=f"load_{session_id}"):
+                        # Load session
+                        session_data = load_chat_session(session_id)
+                        st.session_state.chat_messages = session_data['messages']
+                        st.session_state.tracked_photo_ids = session_data['photo_ids']
+                        st.session_state.current_session_id = session_id
+                        st.session_state.session_title = session_data['title']
+                        st.success(f"✓ Loaded: {session_data['title']}")
+                        st.rerun()
+                with col_b:
+                    if st.button("🗑️", key=f"delete_{session_id}"):
+                        delete_chat_session(session_id)
+                        st.success("Deleted")
+                        st.rerun()
+
+                st.caption(f"📸 {photo_count} photos | Updated: {updated_at[:16]}")
+        else:
+            st.info("No saved chats yet")
+
+    # New Chat button
+    if len(st.session_state.chat_messages) > 0:
+        if st.button("🆕 Start New Chat"):
+            st.session_state.chat_messages = []
+            st.session_state.tracked_photo_ids = []
+            st.session_state.current_session_id = None
+            st.session_state.session_title = None
+            st.rerun()
 
 # Admin Section - Edit Photo Metadata
 st.markdown("---")
