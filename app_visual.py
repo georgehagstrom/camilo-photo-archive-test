@@ -727,7 +727,7 @@ def analyze_image_vision(photo_id, question=None):
 TOOLS = [
     {
         "name": "query_database",
-        "description": "Execute SQL queries on the photo archive database. The database has a 'photos' table with columns: id, filename, file_path, original_caption, latitude, longitude, caption_year, caption_city, caption_location, caption_intersection, caption_street_address. Use this to find photos matching specific criteria.",
+        "description": "Execute SQL queries on the photo archive database. Tables available: (1) photos: id, filename, file_path, original_caption, latitude, longitude, caption_year, caption_city, caption_location, caption_intersection, caption_street_address, notes (research annotations). (2) vision_cache: photo_id, last_question, analysis (previous AI visual analysis), timestamp. IMPORTANT: Check vision_cache FIRST when you need visual information about photos - it contains cached AI analyses. Use JOINs to get photo metadata with cached analyses: SELECT p.*, v.analysis FROM photos p LEFT JOIN vision_cache v ON p.id=v.photo_id",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -741,7 +741,7 @@ TOOLS = [
     },
     {
         "name": "analyze_image",
-        "description": "Use Claude's vision capabilities to analyze a photo from the archive. Can describe visual content, read text/signs, assess building conditions, identify architectural features, and answer specific questions about what's visible in the image. Use this when you need to 'see' what's actually in a photo beyond the metadata.",
+        "description": "Use Claude's vision AI to analyze a photo from the archive. Can describe visual content, read text/signs, assess building conditions, identify people, architectural features, and answer specific questions about what's visible. IMPORTANT: This tool should only be used for NEW analyses. Check vision_cache table first using query_database to see if the photo has already been analyzed. Only use this tool if: (1) no cached analysis exists, or (2) you need to answer a specific question not covered by the cached analysis.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -899,21 +899,30 @@ When the user refers to "this photo", "the current image", "this image", or "the
 
 Archive contains {len(photos)} photos from {min(years)} to {max(years)} across {len(location_groups)} locations in Camden, NJ.
 {current_context}
+DATABASE SCHEMA:
+- photos table: id, filename, file_path, original_caption, latitude, longitude, caption_year, caption_city, caption_location, caption_intersection, caption_street_address, notes (research annotations)
+- vision_cache table: photo_id, last_question, analysis (cached AI visual analysis), timestamp
+
+IMPORTANT - CHECK EXISTING DATA FIRST:
+1. ALWAYS query the photos table for 'notes' field - contains research annotations about photos
+2. ALWAYS query the vision_cache table to see if photos have already been visually analyzed
+3. The vision_cache contains previous AI analyses - check it before requesting new analyze_image calls
+4. If vision_cache has analysis for a photo, use that information instead of re-analyzing
+5. Only use analyze_image for NEW visual analysis or specific questions not answered by cache
+
 You have access to tools:
-- query_database: Run SQL queries on the photo database to find photos
-- analyze_image: Use vision AI to actually SEE and analyze the content of photos (read signs, describe buildings, assess conditions, identify visual details)
-- fetch_url: Fetch web content for research (extracts text from HTML, handles large pages)
-- run_python: Execute Python code for analysis
+- query_database: Query photos table (metadata, notes) AND vision_cache table (previous analyses). Use JOINs to get both photo info and cached analyses together.
+- analyze_image: Use vision AI to SEE photo content (automatically uses cache when appropriate, but you should check vision_cache first to avoid unnecessary calls)
+- fetch_url: Fetch web content for historical research
+- run_python: Execute Python for data analysis
 
 RESEARCH APPROACH:
-- Be thorough and persistent - use as many tool calls as needed to answer completely
-- Try multiple search strategies if initial approaches don't work
-- When you find good sources, extract all relevant information
-- If the user provides a URL, fully parse and extract information from it
-- Continue researching until you have a complete answer
-- When user refers to "the image" or "current photo", use the CURRENTLY VIEWING photo ID
-
-The photos table has: id, filename, file_path, original_caption, latitude, longitude, caption_year, caption_city, caption_location, caption_intersection, caption_street_address."""
+- Check vision_cache table FIRST when asked about visual content of photos
+- Check notes field for existing research annotations
+- Only call analyze_image if no cached analysis exists or user asks a specific new question
+- Use JOINs like: SELECT p.*, v.analysis FROM photos p LEFT JOIN vision_cache v ON p.id=v.photo_id
+- Be thorough and persistent with multiple tool calls as needed
+- When user refers to "the image" or "current photo", use the CURRENTLY VIEWING photo ID"""
 
         # Get AI response with tool use
         with st.chat_message("assistant"):
