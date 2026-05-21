@@ -460,6 +460,298 @@ with st.sidebar:
     years = [p['caption_year'] for p in photos if p['caption_year']]
     if years:
         st.markdown(f"**Years:** {min(years)} - {max(years)}")
+# Chat Interface
+st.markdown("---")
+st.subheader("💬 Chat with the Archive")
+
+# Check for API key
+api_key = os.environ.get('ANTHROPIC_API_KEY')
+
+if not api_key:
+    st.warning("""
+    ⚠️ **Chat requires an Anthropic API key**
+
+    To enable chat:
+    1. Get your API key from: https://console.anthropic.com/settings/keys
+    2. Run: `./update_api_key.sh` (and paste your key when prompted)
+    3. Restart the app
+
+    Or set it directly:
+    ```bash
+    export ANTHROPIC_API_KEY='your-key-here'
+    ```
+    """)
+else:
+    # Initialize chat history
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+
+    # Initialize chat session tracking
+    if "current_session_id" not in st.session_state:
+        st.session_state.current_session_id = None
+    if "tracked_photo_ids" not in st.session_state:
+        st.session_state.tracked_photo_ids = []
+    if "session_title" not in st.session_state:
+        st.session_state.session_title = None
+
+    # Display chat messages
+    for message in st.session_state.chat_messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # Chat input
+    if prompt := st.chat_input("Ask about the archive..."):
+        # Add user message
+        st.session_state.chat_messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # Build system context with current selection
+        current_context = ""
+        if st.session_state.selected_photo_id:
+            # Find the currently selected photo
+            current_photo = next((p for p in photos if p['id'] == st.session_state.selected_photo_id), None)
+            if current_photo:
+                current_context = f"""
+
+CURRENTLY VIEWING:
+- Photo ID: {current_photo['id']}
+- Filename: {current_photo['filename']}
+- Year: {current_photo['caption_year']}
+- Location: {current_photo['caption_location']}
+- City: {current_photo['caption_city']}
+- Caption: {current_photo['original_caption']}
+
+When the user refers to "this photo", "the current image", "this image", or "the photo", they mean Photo ID {current_photo['id']}.
+"""
+
+        system_context = f"""You are analyzing Camilo Vergara's documentary photography archive of urban deindustrialization.
+
+Archive contains {len(photos)} photos from {min(years)} to {max(years)} across {len(location_groups)} locations in Camden, NJ.
+{current_context}
+You have access to tools:
+- query_database: Run SQL queries on the photo database to find photos
+- analyze_image: Use vision AI to actually SEE and analyze the content of photos (read signs, describe buildings, assess conditions, identify visual details)
+- fetch_url: Fetch web content for research (extracts text from HTML, handles large pages)
+- run_python: Execute Python code for analysis
+
+RESEARCH APPROACH:
+- Be thorough and persistent - use as many tool calls as needed to answer completely
+- Try multiple search strategies if initial approaches don't work
+- When you find good sources, extract all relevant information
+- If the user provides a URL, fully parse and extract information from it
+- Continue researching until you have a complete answer
+- When user refers to "the image" or "current photo", use the CURRENTLY VIEWING photo ID
+
+The photos table has: id, filename, file_path, original_caption, latitude, longitude, caption_year, caption_city, caption_location, caption_intersection, caption_street_address."""
+
+        # Get AI response with tool use
+        with st.chat_message("assistant"):
+            message_placeholder = st.empty()
+            current_tool_status = st.empty()  # Single line for current tool
+
+            try:
+                client = anthropic.Anthropic(api_key=api_key)
+
+                # Build full conversation history from session state
+                messages = []
+                for msg in st.session_state.chat_messages:
+                    # Only include user and assistant text messages (not tool results)
+                    if isinstance(msg.get("content"), str):
+                        messages.append({"role": msg["role"], "content": msg["content"]})
+
+                # Tool use loop (generous limit like Opus - 25 iterations)
+                for iteration in range(25):
+                    # Clean spinner without step numbers
+                    with st.spinner("Thinking..."):
+                        response = client.messages.create(
+                            model="claude-sonnet-4-5-20250929",
+                            max_tokens=8192,  # Match Opus's generous token limit
+                            system=system_context,
+                            tools=TOOLS,
+                            messages=messages
+                        )
+
+                    # Check if Claude wants to use tools
+                    if response.stop_reason == "tool_use":
+                        # Process tool calls
+                        tool_results = []
+
+                        # Show any thinking text before tool use (like Opus does)
+                        thinking_text = ""
+                        for content_block in response.content:
+                            if hasattr(content_block, "text") and content_block.text:
+                                thinking_text += content_block.text
+
+                        if thinking_text:
+                            message_placeholder.markdown(f"*{thinking_text}*")
+
+                        # Process tools quietly - just show current tool
+                        for content_block in response.content:
+                            if content_block.type == "tool_use":
+                                tool_name = content_block.name
+                                tool_input = content_block.input
+
+                                # Show brief status - just the tool name, no clutter
+                                current_tool_status.caption(f"🔧 Using {tool_name}...")
+
+                                # Execute tool (silently)
+                                tool_result = process_tool_call(tool_name, tool_input)
+
+                                # Add tool result to conversation
+                                tool_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": content_block.id,
+                                    "content": json.dumps(tool_result)
+                                })
+
+                        # Clear tool status
+                        current_tool_status.empty()
+
+                        # Add assistant's response and tool results to messages
+                        messages.append({"role": "assistant", "content": response.content})
+                        messages.append({"role": "user", "content": tool_results})
+
+                    else:
+                        # No more tools to use, get final text response
+                        final_text = ""
+                        for content_block in response.content:
+                            if hasattr(content_block, "text"):
+                                final_text += content_block.text
+
+                        if final_text:
+                            message_placeholder.markdown(final_text)
+                            # Save to chat history
+                            st.session_state.chat_messages.append({"role": "assistant", "content": final_text})
+                        else:
+                            message_placeholder.info("Response completed (see tool results above)")
+                            st.session_state.chat_messages.append({"role": "assistant", "content": "(Tool execution completed)"})
+                        break
+                else:
+                    # Hit iteration limit - try one more time without tools (like Opus does gracefully)
+                    current_tool_status.empty()
+
+                    # Ask Claude to synthesize without more tools
+                    final_response = client.messages.create(
+                        model="claude-sonnet-4-5-20250929",
+                        max_tokens=4096,
+                        system=system_context,
+                        messages=messages + [{
+                            "role": "user",
+                            "content": "Please provide a comprehensive final answer based on all the information you've gathered."
+                        }]
+                    )
+
+                    final_text = ""
+                    for content_block in final_response.content:
+                        if hasattr(content_block, "text"):
+                            final_text += content_block.text
+
+                    if final_text:
+                        message_placeholder.markdown(final_text)
+                        st.session_state.chat_messages.append({"role": "assistant", "content": final_text})
+                    else:
+                        message_placeholder.error("Could not generate a final response.")
+                        st.session_state.chat_messages.append({"role": "assistant", "content": "(Error: No final response)"})
+
+            except Exception as e:
+                error_msg = f"❌ Error: {str(e)}"
+                st.error(error_msg)
+
+                # If model not found, suggest update
+                if "404" in str(e) or "not_found_error" in str(e):
+                    st.info("""
+                    This API key doesn't have access to the required model.
+
+                    Please:
+                    1. Get a new key from: https://console.anthropic.com/settings/keys
+                    2. Run: `./update_api_key.sh`
+                    3. Restart the app
+                    """)
+
+    # Example questions
+    with st.expander("💡 Example questions (with vision AI!)"):
+        example_questions = [
+            "Analyze photo 7 - what do you see in the image?",
+            "What text is visible on the buildings in the photos from 810 Broadway?",
+            "Compare the visual condition of buildings across different years",
+            "Search the web for historical context about Camden NJ in 1979",
+            "Find all photos from the 1970s and describe what they show",
+            "What architectural features are visible in photo 5?",
+            "Analyze the graffiti and murals visible in the archive photos"
+        ]
+
+        for q in example_questions:
+            if st.button(q, key=f"example_{q[:20]}"):
+                st.session_state.chat_messages.append({"role": "user", "content": q})
+                st.rerun()
+
+    # Save/Load Chat Session
+    st.markdown("---")
+    st.markdown("### 💾 Save & Load Chats")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Save Current Chat**")
+        if len(st.session_state.chat_messages) > 0:
+            save_title = st.text_input(
+                "Chat Title:",
+                value=st.session_state.session_title or f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                key="save_title_input"
+            )
+
+            photo_count = len(st.session_state.tracked_photo_ids)
+            st.caption(f"📸 {photo_count} photos discussed")
+
+            if st.button("💾 Save This Chat", type="primary"):
+                session_id = save_chat_session(
+                    save_title,
+                    st.session_state.chat_messages,
+                    st.session_state.tracked_photo_ids
+                )
+                st.session_state.current_session_id = session_id
+                st.session_state.session_title = save_title
+                st.success(f"✓ Chat saved! (ID: {session_id})")
+                st.rerun()
+        else:
+            st.info("Start a conversation to save it")
+
+    with col2:
+        st.markdown("**Load Saved Chat**")
+        saved_sessions = get_all_chat_sessions()
+
+        if saved_sessions:
+            for session_id, title, created_at, updated_at, photo_count in saved_sessions:
+                col_a, col_b = st.columns([3, 1])
+                with col_a:
+                    if st.button(f"📁 {title}", key=f"load_{session_id}"):
+                        # Load session
+                        session_data = load_chat_session(session_id)
+                        st.session_state.chat_messages = session_data['messages']
+                        st.session_state.tracked_photo_ids = session_data['photo_ids']
+                        st.session_state.current_session_id = session_id
+                        st.session_state.session_title = session_data['title']
+                        st.success(f"✓ Loaded: {session_data['title']}")
+                        st.rerun()
+                with col_b:
+                    if st.button("🗑️", key=f"delete_{session_id}"):
+                        delete_chat_session(session_id)
+                        st.success("Deleted")
+                        st.rerun()
+
+                st.caption(f"📸 {photo_count} photos | Updated: {updated_at[:16]}")
+        else:
+            st.info("No saved chats yet")
+
+    # New Chat button
+    if len(st.session_state.chat_messages) > 0:
+        if st.button("🆕 Start New Chat"):
+            st.session_state.chat_messages = []
+            st.session_state.tracked_photo_ids = []
+            st.session_state.current_session_id = None
+            st.session_state.session_title = None
+            st.rerun()
 
 # Tool implementations for MCP
 def execute_sql_query(query):
@@ -752,279 +1044,6 @@ def process_tool_call(tool_name, tool_input):
         return {"error": f"Unknown tool: {tool_name}"}
 
 # Chat Interface
-st.markdown("---")
-st.subheader("💬 Chat with the Archive")
-
-# Check for API key
-api_key = os.environ.get('ANTHROPIC_API_KEY')
-
-if not api_key:
-    st.warning("""
-    ⚠️ **Chat requires an Anthropic API key**
-
-    To enable chat:
-    1. Get your API key from: https://console.anthropic.com/settings/keys
-    2. Run: `./update_api_key.sh` (and paste your key when prompted)
-    3. Restart the app
-
-    Or set it directly:
-    ```bash
-    export ANTHROPIC_API_KEY='your-key-here'
-    ```
-    """)
-else:
-    # Initialize chat history
-    if "chat_messages" not in st.session_state:
-        st.session_state.chat_messages = []
-
-    # Initialize chat session tracking
-    if "current_session_id" not in st.session_state:
-        st.session_state.current_session_id = None
-    if "tracked_photo_ids" not in st.session_state:
-        st.session_state.tracked_photo_ids = []
-    if "session_title" not in st.session_state:
-        st.session_state.session_title = None
-
-    # Display chat messages
-    for message in st.session_state.chat_messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # Chat input
-    if prompt := st.chat_input("Ask about the archive..."):
-        # Add user message
-        st.session_state.chat_messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        # Build system context
-        system_context = f"""You are analyzing Camilo Vergara's documentary photography archive of urban deindustrialization.
-
-Archive contains {len(photos)} photos from {min(years)} to {max(years)} across {len(location_groups)} locations in Camden, NJ.
-
-You have access to tools:
-- query_database: Run SQL queries on the photo database to find photos
-- analyze_image: Use vision AI to actually SEE and analyze the content of photos (read signs, describe buildings, assess conditions, identify visual details)
-- fetch_url: Fetch web content for research (extracts text from HTML, handles large pages)
-- run_python: Execute Python code for analysis
-
-RESEARCH APPROACH:
-- Be thorough and persistent - use as many tool calls as needed to answer completely
-- Try multiple search strategies if initial approaches don't work
-- When you find good sources, extract all relevant information
-- If the user provides a URL, fully parse and extract information from it
-- Continue researching until you have a complete answer
-
-The photos table has: id, filename, file_path, original_caption, latitude, longitude, caption_year, caption_city, caption_location, caption_intersection, caption_street_address."""
-
-        # Get AI response with tool use
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            current_tool_status = st.empty()  # Single line for current tool
-
-            try:
-                client = anthropic.Anthropic(api_key=api_key)
-
-                # Build full conversation history from session state
-                messages = []
-                for msg in st.session_state.chat_messages:
-                    # Only include user and assistant text messages (not tool results)
-                    if isinstance(msg.get("content"), str):
-                        messages.append({"role": msg["role"], "content": msg["content"]})
-
-                # Tool use loop (generous limit like Opus - 25 iterations)
-                for iteration in range(25):
-                    # Clean spinner without step numbers
-                    with st.spinner("Thinking..."):
-                        response = client.messages.create(
-                            model="claude-sonnet-4-5-20250929",
-                            max_tokens=8192,  # Match Opus's generous token limit
-                            system=system_context,
-                            tools=TOOLS,
-                            messages=messages
-                        )
-
-                    # Check if Claude wants to use tools
-                    if response.stop_reason == "tool_use":
-                        # Process tool calls
-                        tool_results = []
-
-                        # Show any thinking text before tool use (like Opus does)
-                        thinking_text = ""
-                        for content_block in response.content:
-                            if hasattr(content_block, "text") and content_block.text:
-                                thinking_text += content_block.text
-
-                        if thinking_text:
-                            message_placeholder.markdown(f"*{thinking_text}*")
-
-                        # Process tools quietly - just show current tool
-                        for content_block in response.content:
-                            if content_block.type == "tool_use":
-                                tool_name = content_block.name
-                                tool_input = content_block.input
-
-                                # Show brief status - just the tool name, no clutter
-                                current_tool_status.caption(f"🔧 Using {tool_name}...")
-
-                                # Execute tool (silently)
-                                tool_result = process_tool_call(tool_name, tool_input)
-
-                                # Add tool result to conversation
-                                tool_results.append({
-                                    "type": "tool_result",
-                                    "tool_use_id": content_block.id,
-                                    "content": json.dumps(tool_result)
-                                })
-
-                        # Clear tool status
-                        current_tool_status.empty()
-
-                        # Add assistant's response and tool results to messages
-                        messages.append({"role": "assistant", "content": response.content})
-                        messages.append({"role": "user", "content": tool_results})
-
-                    else:
-                        # No more tools to use, get final text response
-                        final_text = ""
-                        for content_block in response.content:
-                            if hasattr(content_block, "text"):
-                                final_text += content_block.text
-
-                        if final_text:
-                            message_placeholder.markdown(final_text)
-                            # Save to chat history
-                            st.session_state.chat_messages.append({"role": "assistant", "content": final_text})
-                        else:
-                            message_placeholder.info("Response completed (see tool results above)")
-                            st.session_state.chat_messages.append({"role": "assistant", "content": "(Tool execution completed)"})
-                        break
-                else:
-                    # Hit iteration limit - try one more time without tools (like Opus does gracefully)
-                    current_tool_status.empty()
-
-                    # Ask Claude to synthesize without more tools
-                    final_response = client.messages.create(
-                        model="claude-sonnet-4-5-20250929",
-                        max_tokens=4096,
-                        system=system_context,
-                        messages=messages + [{
-                            "role": "user",
-                            "content": "Please provide a comprehensive final answer based on all the information you've gathered."
-                        }]
-                    )
-
-                    final_text = ""
-                    for content_block in final_response.content:
-                        if hasattr(content_block, "text"):
-                            final_text += content_block.text
-
-                    if final_text:
-                        message_placeholder.markdown(final_text)
-                        st.session_state.chat_messages.append({"role": "assistant", "content": final_text})
-                    else:
-                        message_placeholder.error("Could not generate a final response.")
-                        st.session_state.chat_messages.append({"role": "assistant", "content": "(Error: No final response)"})
-
-            except Exception as e:
-                error_msg = f"❌ Error: {str(e)}"
-                st.error(error_msg)
-
-                # If model not found, suggest update
-                if "404" in str(e) or "not_found_error" in str(e):
-                    st.info("""
-                    This API key doesn't have access to the required model.
-
-                    Please:
-                    1. Get a new key from: https://console.anthropic.com/settings/keys
-                    2. Run: `./update_api_key.sh`
-                    3. Restart the app
-                    """)
-
-    # Example questions
-    with st.expander("💡 Example questions (with vision AI!)"):
-        example_questions = [
-            "Analyze photo 7 - what do you see in the image?",
-            "What text is visible on the buildings in the photos from 810 Broadway?",
-            "Compare the visual condition of buildings across different years",
-            "Search the web for historical context about Camden NJ in 1979",
-            "Find all photos from the 1970s and describe what they show",
-            "What architectural features are visible in photo 5?",
-            "Analyze the graffiti and murals visible in the archive photos"
-        ]
-
-        for q in example_questions:
-            if st.button(q, key=f"example_{q[:20]}"):
-                st.session_state.chat_messages.append({"role": "user", "content": q})
-                st.rerun()
-
-    # Save/Load Chat Session
-    st.markdown("---")
-    st.markdown("### 💾 Save & Load Chats")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("**Save Current Chat**")
-        if len(st.session_state.chat_messages) > 0:
-            save_title = st.text_input(
-                "Chat Title:",
-                value=st.session_state.session_title or f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                key="save_title_input"
-            )
-
-            photo_count = len(st.session_state.tracked_photo_ids)
-            st.caption(f"📸 {photo_count} photos discussed")
-
-            if st.button("💾 Save This Chat", type="primary"):
-                session_id = save_chat_session(
-                    save_title,
-                    st.session_state.chat_messages,
-                    st.session_state.tracked_photo_ids
-                )
-                st.session_state.current_session_id = session_id
-                st.session_state.session_title = save_title
-                st.success(f"✓ Chat saved! (ID: {session_id})")
-                st.rerun()
-        else:
-            st.info("Start a conversation to save it")
-
-    with col2:
-        st.markdown("**Load Saved Chat**")
-        saved_sessions = get_all_chat_sessions()
-
-        if saved_sessions:
-            for session_id, title, created_at, updated_at, photo_count in saved_sessions:
-                col_a, col_b = st.columns([3, 1])
-                with col_a:
-                    if st.button(f"📁 {title}", key=f"load_{session_id}"):
-                        # Load session
-                        session_data = load_chat_session(session_id)
-                        st.session_state.chat_messages = session_data['messages']
-                        st.session_state.tracked_photo_ids = session_data['photo_ids']
-                        st.session_state.current_session_id = session_id
-                        st.session_state.session_title = session_data['title']
-                        st.success(f"✓ Loaded: {session_data['title']}")
-                        st.rerun()
-                with col_b:
-                    if st.button("🗑️", key=f"delete_{session_id}"):
-                        delete_chat_session(session_id)
-                        st.success("Deleted")
-                        st.rerun()
-
-                st.caption(f"📸 {photo_count} photos | Updated: {updated_at[:16]}")
-        else:
-            st.info("No saved chats yet")
-
-    # New Chat button
-    if len(st.session_state.chat_messages) > 0:
-        if st.button("🆕 Start New Chat"):
-            st.session_state.chat_messages = []
-            st.session_state.tracked_photo_ids = []
-            st.session_state.current_session_id = None
-            st.session_state.session_title = None
-            st.rerun()
-
 # Admin Section - Edit Photo Metadata
 st.markdown("---")
 st.subheader("🔧 Admin: Edit Photo Metadata")
