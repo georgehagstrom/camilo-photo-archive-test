@@ -462,7 +462,8 @@ with st.sidebar:
         st.markdown(f"**Years:** {min(years)} - {max(years)}")
 # Chat Interface
 st.markdown("---")
-st.subheader("💬 Chat with the Archive")
+st.markdown("# 💬 Chat with the Archive")
+st.markdown("Ask questions about the photos, analyze images with AI vision, or research historical context.")
 
 # Check for API key
 api_key = os.environ.get('ANTHROPIC_API_KEY')
@@ -668,23 +669,6 @@ The photos table has: id, filename, file_path, original_caption, latitude, longi
                     2. Run: `./update_api_key.sh`
                     3. Restart the app
                     """)
-
-    # Example questions
-    with st.expander("💡 Example questions (with vision AI!)"):
-        example_questions = [
-            "Analyze photo 7 - what do you see in the image?",
-            "What text is visible on the buildings in the photos from 810 Broadway?",
-            "Compare the visual condition of buildings across different years",
-            "Search the web for historical context about Camden NJ in 1979",
-            "Find all photos from the 1970s and describe what they show",
-            "What architectural features are visible in photo 5?",
-            "Analyze the graffiti and murals visible in the archive photos"
-        ]
-
-        for q in example_questions:
-            if st.button(q, key=f"example_{q[:20]}"):
-                st.session_state.chat_messages.append({"role": "user", "content": q})
-                st.rerun()
 
     # Save/Load Chat Session
     st.markdown("---")
