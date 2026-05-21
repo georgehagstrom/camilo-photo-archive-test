@@ -436,6 +436,9 @@ else:
     # No photo selected yet
     st.info("👆 Click a marker on the map to view photos at that location")
 
+# Check for API key (needed for sidebar chat management)
+api_key = os.environ.get('ANTHROPIC_API_KEY')
+
 # Sidebar with location list
 with st.sidebar:
     st.header("📍 All Locations")
@@ -460,14 +463,85 @@ with st.sidebar:
     years = [p['caption_year'] for p in photos if p['caption_year']]
     if years:
         st.markdown(f"**Years:** {min(years)} - {max(years)}")
+
+    # Save/Load Chats in sidebar
+    if api_key and "chat_messages" in st.session_state:
+        st.markdown("---")
+        st.markdown("### 💾 Chats")
+
+        # Save current chat
+        if len(st.session_state.chat_messages) > 0:
+            save_title = st.text_input(
+                "Save as:",
+                value=st.session_state.session_title or f"Chat {datetime.now().strftime('%m/%d %H:%M')}",
+                key="save_title_sidebar"
+            )
+            if st.button("💾 Save", key="save_chat_sidebar", use_container_width=True):
+                session_id = save_chat_session(
+                    save_title,
+                    st.session_state.chat_messages,
+                    st.session_state.tracked_photo_ids
+                )
+                st.session_state.current_session_id = session_id
+                st.session_state.session_title = save_title
+                st.success("✓ Saved!")
+                st.rerun()
+
+        # Load saved chats
+        saved_sessions = get_all_chat_sessions()
+        if saved_sessions:
+            st.markdown("**Saved Chats:**")
+            for session_id, title, created_at, updated_at, photo_count in saved_sessions[:5]:  # Show last 5
+                col_a, col_b = st.columns([4, 1])
+                with col_a:
+                    if st.button(f"📁 {title[:20]}", key=f"load_sb_{session_id}", use_container_width=True):
+                        session_data = load_chat_session(session_id)
+                        st.session_state.chat_messages = session_data['messages']
+                        st.session_state.tracked_photo_ids = session_data['photo_ids']
+                        st.session_state.current_session_id = session_id
+                        st.session_state.session_title = session_data['title']
+                        st.rerun()
+                with col_b:
+                    if st.button("🗑️", key=f"del_sb_{session_id}"):
+                        delete_chat_session(session_id)
+                        st.rerun()
+
+        # New chat button
+        if len(st.session_state.chat_messages) > 0:
+            if st.button("🆕 New Chat", key="new_chat_sidebar", use_container_width=True):
+                st.session_state.chat_messages = []
+                st.session_state.tracked_photo_ids = []
+                st.session_state.current_session_id = None
+                st.session_state.session_title = None
+                st.rerun()
+
+    # Admin in sidebar
+    st.markdown("---")
+    st.markdown("### 🔧 Admin")
+
+    if 'admin_authenticated' not in st.session_state:
+        st.session_state.admin_authenticated = False
+
+    if not st.session_state.admin_authenticated:
+        admin_password = st.text_input("Password", type="password", key="admin_password_sidebar")
+        if st.button("Login", key="admin_login_sidebar", use_container_width=True):
+            correct_password = os.environ.get('ADMIN_PASSWORD', os.environ.get('APP_PASSWORD', 'admin'))
+            if admin_password == correct_password:
+                st.session_state.admin_authenticated = True
+                st.rerun()
+            else:
+                st.error("❌ Incorrect")
+    else:
+        if st.button("Edit Metadata", key="goto_admin_sidebar", use_container_width=True):
+            st.session_state.show_admin_panel = True
+            st.rerun()
+
 # Chat Interface
 st.markdown("---")
 st.markdown("# 💬 Chat with the Archive")
 st.markdown("Ask questions about the photos, analyze images with AI vision, or research historical context.")
 
-# Check for API key
-api_key = os.environ.get('ANTHROPIC_API_KEY')
-
+# Chat requires API key
 if not api_key:
     st.warning("""
     ⚠️ **Chat requires an Anthropic API key**
@@ -669,73 +743,6 @@ The photos table has: id, filename, file_path, original_caption, latitude, longi
                     2. Run: `./update_api_key.sh`
                     3. Restart the app
                     """)
-
-    # Save/Load Chat Session
-    st.markdown("---")
-    st.markdown("### 💾 Save & Load Chats")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("**Save Current Chat**")
-        if len(st.session_state.chat_messages) > 0:
-            save_title = st.text_input(
-                "Chat Title:",
-                value=st.session_state.session_title or f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                key="save_title_input"
-            )
-
-            photo_count = len(st.session_state.tracked_photo_ids)
-            st.caption(f"📸 {photo_count} photos discussed")
-
-            if st.button("💾 Save This Chat", type="primary"):
-                session_id = save_chat_session(
-                    save_title,
-                    st.session_state.chat_messages,
-                    st.session_state.tracked_photo_ids
-                )
-                st.session_state.current_session_id = session_id
-                st.session_state.session_title = save_title
-                st.success(f"✓ Chat saved! (ID: {session_id})")
-                st.rerun()
-        else:
-            st.info("Start a conversation to save it")
-
-    with col2:
-        st.markdown("**Load Saved Chat**")
-        saved_sessions = get_all_chat_sessions()
-
-        if saved_sessions:
-            for session_id, title, created_at, updated_at, photo_count in saved_sessions:
-                col_a, col_b = st.columns([3, 1])
-                with col_a:
-                    if st.button(f"📁 {title}", key=f"load_{session_id}"):
-                        # Load session
-                        session_data = load_chat_session(session_id)
-                        st.session_state.chat_messages = session_data['messages']
-                        st.session_state.tracked_photo_ids = session_data['photo_ids']
-                        st.session_state.current_session_id = session_id
-                        st.session_state.session_title = session_data['title']
-                        st.success(f"✓ Loaded: {session_data['title']}")
-                        st.rerun()
-                with col_b:
-                    if st.button("🗑️", key=f"delete_{session_id}"):
-                        delete_chat_session(session_id)
-                        st.success("Deleted")
-                        st.rerun()
-
-                st.caption(f"📸 {photo_count} photos | Updated: {updated_at[:16]}")
-        else:
-            st.info("No saved chats yet")
-
-    # New Chat button
-    if len(st.session_state.chat_messages) > 0:
-        if st.button("🆕 Start New Chat"):
-            st.session_state.chat_messages = []
-            st.session_state.tracked_photo_ids = []
-            st.session_state.current_session_id = None
-            st.session_state.session_title = None
-            st.rerun()
 
 # Tool implementations for MCP
 def execute_sql_query(query):
@@ -1027,28 +1034,15 @@ def process_tool_call(tool_name, tool_input):
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
-# Chat Interface
-# Admin Section - Edit Photo Metadata
-st.markdown("---")
-st.subheader("🔧 Admin: Edit Photo Metadata")
+# Admin Section - Edit Photo Metadata (shown when requested from sidebar)
+if st.session_state.get('show_admin_panel', False) and st.session_state.get('admin_authenticated', False):
+    st.markdown("---")
+    st.subheader("🔧 Admin: Edit Photo Metadata")
 
-# Admin password check
-if 'admin_authenticated' not in st.session_state:
-    st.session_state.admin_authenticated = False
-
-if not st.session_state.admin_authenticated:
-    admin_password = st.text_input("Admin Password", type="password", key="admin_password")
-
-    if st.button("Access Admin Panel", type="primary"):
-        # Use same APP_PASSWORD or a separate ADMIN_PASSWORD
-        correct_password = os.environ.get('ADMIN_PASSWORD', os.environ.get('APP_PASSWORD', 'admin'))
-        if admin_password == correct_password:
-            st.session_state.admin_authenticated = True
-            st.rerun()
-        else:
-            st.error("❌ Incorrect admin password")
-else:
-    st.success("✓ Admin access granted")
+    # Close button
+    if st.button("← Back to Photos"):
+        st.session_state.show_admin_panel = False
+        st.rerun()
 
     # Select photo to edit
     photo_options = {f"{p['id']}: {p['filename']} ({p['caption_year']})": p['id'] for p in photos}
