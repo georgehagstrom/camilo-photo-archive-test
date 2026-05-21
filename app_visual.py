@@ -605,11 +605,13 @@ with st.sidebar:
                 st.session_state.session_title = save_title
                 st.success("✓ Saved!")
                 st.rerun()
+        else:
+            st.caption("💬 Start a chat to save it")
 
-        # Load saved chats
+        # Load saved chats - always show section
+        st.markdown("**Saved Chats:**")
         saved_sessions = get_all_chat_sessions()
         if saved_sessions:
-            st.markdown("**Saved Chats:**")
             for session_id, title, created_at, updated_at, photo_count in saved_sessions[:5]:  # Show last 5
                 col_a, col_b = st.columns([4, 1])
                 with col_a:
@@ -624,6 +626,8 @@ with st.sidebar:
                     if st.button("🗑️", key=f"del_sb_{session_id}"):
                         delete_chat_session(session_id)
                         st.rerun()
+        else:
+            st.info("No saved chats yet. Save a chat to see it here!")
 
         # New chat button
         if "chat_messages" in st.session_state and len(st.session_state.chat_messages) > 0:
