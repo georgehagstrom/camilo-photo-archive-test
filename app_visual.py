@@ -465,12 +465,12 @@ with st.sidebar:
         st.markdown(f"**Years:** {min(years)} - {max(years)}")
 
     # Save/Load Chats in sidebar
-    if api_key and "chat_messages" in st.session_state:
+    if api_key:
         st.markdown("---")
         st.markdown("### 💾 Chats")
 
         # Save current chat
-        if len(st.session_state.chat_messages) > 0:
+        if "chat_messages" in st.session_state and len(st.session_state.chat_messages) > 0:
             save_title = st.text_input(
                 "Save as:",
                 value=st.session_state.session_title or f"Chat {datetime.now().strftime('%m/%d %H:%M')}",
@@ -507,13 +507,18 @@ with st.sidebar:
                         st.rerun()
 
         # New chat button
-        if len(st.session_state.chat_messages) > 0:
+        if "chat_messages" in st.session_state and len(st.session_state.chat_messages) > 0:
             if st.button("🆕 New Chat", key="new_chat_sidebar", use_container_width=True):
                 st.session_state.chat_messages = []
                 st.session_state.tracked_photo_ids = []
                 st.session_state.current_session_id = None
                 st.session_state.session_title = None
                 st.rerun()
+
+        # Show saved chats even if no active chat
+        saved_sessions_count = len(get_all_chat_sessions())
+        if saved_sessions_count > 0 and "chat_messages" not in st.session_state:
+            st.info(f"📁 {saved_sessions_count} saved chat(s)")
 
     # Admin in sidebar
     st.markdown("---")
