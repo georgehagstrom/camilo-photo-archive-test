@@ -792,13 +792,14 @@ def process_tool_call(tool_name, tool_input):
     if tool_name == "query_database":
         result = execute_sql_query(tool_input["query"])
         # Track photo IDs from query results
-        if isinstance(result, dict) and 'rows' in result:
-            for row in result['rows']:
-                if isinstance(row, (list, tuple)) and len(row) > 0:
-                    # Check if first column looks like a photo ID
-                    if isinstance(row[0], int) and row[0] > 0 and row[0] < 10000:
-                        if row[0] not in st.session_state.tracked_photo_ids:
-                            st.session_state.tracked_photo_ids.append(row[0])
+        if isinstance(result, dict) and 'data' in result:
+            for row in result['data']:
+                # row is a dict from DataFrame.to_dict('records')
+                if isinstance(row, dict) and 'id' in row:
+                    photo_id = row['id']
+                    if isinstance(photo_id, int) and photo_id > 0:
+                        if photo_id not in st.session_state.tracked_photo_ids:
+                            st.session_state.tracked_photo_ids.append(photo_id)
         return result
 
     elif tool_name == "analyze_image":
@@ -820,7 +821,11 @@ def process_tool_call(tool_name, tool_input):
 
         # Cache the result
         if isinstance(result, dict) and 'analysis' in result:
-            save_vision_cache(photo_id, question or "general", result['analysis'])
+            try:
+                save_vision_cache(photo_id, question or "general", result['analysis'])
+            except Exception as e:
+                # Log error but don't fail the request
+                print(f"Warning: Failed to cache vision analysis for photo {photo_id}: {e}")
 
         return result
 
